@@ -1,0 +1,307 @@
+#include <Arduino.h>
+ 
+#define cf 35
+
+#define r1 34
+#define r2 39 // pin VN
+#define r3 36 //pin VP
+
+#define l1 32
+#define l2 33
+#define l3 4
+
+#define pwmar 19 //right
+#define pwmbl 18 //left
+
+#define AIN1R 27 //right
+#define AIN2R 26 //right
+#define BIN1L 13 //left
+#define BIN2L 14 //left
+#define STBY 23
+#define nsensor 7
+
+int baseSpeed = 20;
+
+float Kp = 0.3;a
+float Ki = 0.0;
+float Kd = 0.3;
+
+float P;
+float I = 0;
+float D;
+
+unsigned long lineLostTime = 0;         // why did i write this? 
+
+int previousError = 0;
+
+int offset = 0;
+
+int pin[nsensor] = {l3,l2,l1,cf,r1,r2,r3};
+int sensorval[nsensor];
+int maxval[nsensor];
+int minval[nsensor];
+int normval[nsensor]; 
+
+void calibrateSensors();
+void normalizeSensors();
+long calculatePosition();
+float calculatePID(int error);
+void setMotorSpeed(int rightSpeed, int leftSpeed);
+int normalize(int raw, int mn, int mx);
+
+/*void turnleft();
+void turnright();
+void forward();*/
+
+void handleintersection();
+bool intersectiondetection();
+
+//INTERSECTION
+
+struct intersection
+{
+    bool edge;
+    bool center;
+    
+};
+
+intersection x;
+
+
+bool intersectiondetection()
+{
+  
+  x.edge = normval[0]>500 && normval[6]>500;
+  x.center = normval[2]>500 || normval[3]>500 || normval[4]>500;
+ 
+ 
+  if(x.edge && !x.center)
+  {
+    return true;
+  }
+  return false;
+}
+
+
+void handleintersection()
+{
+  int l3n = normalize(analogRead(l3), minval[0], maxval[0]);
+  int l2n = normalize(analogRead(l2), minval[1], maxval[1]);
+
+
+  int speeds[] = {-30, -18, -8};  // high -> medium -> low
+  int stage = 0;
+  offset = speeds[stage];
+
+    
+    if (stage == 0 && l3n < 500)
+    {
+      stage = 1;
+      offset = speeds[stage];
+    }
+    else if (stage == 1 && l2n < 500)
+    {
+      stage = 2;
+      offset = speeds[stage]; 
+    }
+  // return;            i dont remember why i wrote this!!!
+
+}
+
+int normalize(int raw, int mn, int mx)
+{
+  int v = map(raw, mn, mx, 0, 1000);
+  return constrain(v, 0, 1000);
+}
+
+void setup() {
+  Serial.begin(115200);
+ 
+ 
+ 
+ pinMode(cf, INPUT);
+ 
+ pinMode(r1, INPUT);   
+ pinMode(r2, INPUT);
+ pinMode(r3, INPUT);
+ pinMode(l1, INPUT);
+ pinMode(l2, INPUT);
+ pinMode(l3, INPUT);
+
+ pinMode(pwmar, OUTPUT);
+ pinMode(pwmbl, OUTPUT);
+
+ pinMode(AIN1R, OUTPUT);
+ pinMode(AIN2R, OUTPUT);
+ pinMode(BIN1L, OUTPUT);
+ pinMode(BIN2L, OUTPUT);
+
+
+  analogWrite(pwmar, 0);
+  analogWrite(pwmbl, 0);
+  pinMode(STBY, OUTPUT);
+  digitalWrite(STBY, HIGH);
+ 
+  calibrateSensors(); 
+}
+
+void loop() 
+{
+  // to print current values
+  
+  for(int i = 0; i<nsensor; i++)
+  {
+    sensorval[i] = analogRead(pin[i]);
+  }
+
+  normalizeSensors();
+
+ if (intersectiondetection())   // bit values  = 11 111 11
+{
+    setMotorSpeed(20,20);
+    handleintersection();
+    
+}
+
+
+  int pos = calculatePosition();
+ 
+  /*if (pos == -1)
+{
+  // First moment the line is lost
+  if (lineLostTime == 0)
+  {
+    lineLostTime = micros();
+  }
+
+  // Check whether 3 seconds have passed
+  if (micros() - lineLostTime >= 1500000)  // 3 secs
+  {
+    setMotorSpeed(0, 0);
+    return;
+  }
+
+  // Line has been lost, but less than 3 seconds
+  return;    // in order to prevent the pos = -1 value from reaching error and messing up pid correction
+}
+else
+{
+  // Line detected again, reset timer
+  lineLostTime = 0;
+}
+*/
+
+  int error = pos - 3000;
+
+  float pid = calculatePID(error);
+
+ 
+int rightSpeed = baseSpeed - pid;
+int leftSpeed  = baseSpeed + pid;
+
+rightSpeed = constrain(rightSpeed, 0, 255);
+leftSpeed  = constrain(leftSpeed, 0, 255);
+
+setMotorSpeed( rightSpeed,  leftSpeed);
+
+// delay(5); removing the delay because arduino loop function already yeilds without the need of a delay()
+
+}
+
+void calibrateSensors()
+{
+  // Initialize calibration values
+  for (int i = 0; i < nsensor; i++)
+  {
+    minval[i] = 4095;
+    maxval[i] = 0;
+  }
+
+ 
+  // Calibration period
+  for (int t = 0; t < 500; t++)
+  {
+    for (int i = 0; i < nsensor; i++)
+    {
+      int value = analogRead(pin[i]);
+
+      if (value < minval[i])
+      {
+        minval[i] = value;
+      }
+
+      if (value > maxval[i])
+      {
+        maxval[i] = value;
+      }
+    }
+
+    delay(5);
+  }
+
+}
+
+void normalizeSensors()
+{
+  for (int i = 0; i < nsensor; i++)
+  {
+    normval[i] = map(sensorval[i], minval[i], maxval[i], 0, 1000);
+    normval[i] = constrain(normval[i], 0, 1000);
+    // in case of inversion, do normal[i] = 1000 - normal[i]
+  }
+}
+
+long calculatePosition()
+{
+  long weightedSum = 0;
+  long total = 0;
+
+  for (int i = 0; i < nsensor; i++)
+  {
+    weightedSum += (long)normval[i] * (i * 1000);
+    total += normval[i];
+  }
+
+  // No sensor sees the line
+  /*if (total == 0)
+  {
+    
+    return -1;
+  }
+*/
+  return weightedSum / total;
+}
+
+float calculatePID(int error)
+{
+  P = error/10; 
+  
+  /*dividing by 15 because if 3000 error occurs, P value becomes 3000*0.18 = 540 slamming the motor speeds high!!!
+  we make it 3000/(0.18*15) = 36
+  */
+
+  I = I + error;
+
+  D = (error - previousError)/10;
+
+  float PIDvalue = (Kp * P) + (Ki * I) + (Kd * D) + offset;
+
+  previousError = error;
+
+  return PIDvalue;
+}
+
+void setMotorSpeed(int rightSpeed, int leftSpeed)
+{
+  // RIGHT MOTOR - FORWARD
+  digitalWrite(AIN1R, HIGH);
+  digitalWrite(AIN2R, LOW);
+
+  // LEFT MOTOR - FORWARD
+  digitalWrite(BIN1L, HIGH);
+  digitalWrite(BIN2L, LOW);
+
+  // Apply PWM speeds
+  analogWrite(pwmar, rightSpeed);
+  analogWrite(pwmbl, leftSpeed);
+}
